@@ -90,6 +90,33 @@
     if (imgs.length) addFiles(imgs);
   });
 
+  // ---------- Loading state ----------
+  const btnLabel = submitBtn.textContent;
+
+  function setLoading(on) {
+    submitBtn.disabled = on;
+    submitBtn.setAttribute("aria-busy", String(on));
+    submitBtn.replaceChildren(
+      ...(on ? [el("span", { class: "spinner", "aria-hidden": "true" }), "Analysing\u2026"] : [btnLabel])
+    );
+  }
+
+  function showLoadingCard() {
+    results.replaceChildren(
+      el("div", { class: "loading-card" },
+        el("span", { class: "spinner large", "aria-hidden": "true" }),
+        el("div", {},
+          el("strong", {}, "Analysing your conversation"),
+          el("p", {}, "Gemini is reading your messages. This usually takes 20 to 60 seconds.")
+        )
+      )
+    );
+    // On narrow screens the results sit below the form, so bring them into view.
+    if (window.matchMedia("(max-width: 880px)").matches) {
+      results.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
   // ---------- Submit ----------
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -105,8 +132,10 @@
     body.append("perspective", $("#perspective").value.trim());
     body.append("stage", $("#stage").value);
 
-    submitBtn.disabled = true;
-    setStatus("Reading your messages and analysing them. This usually takes 20 to 60 seconds.");
+    const previousResults = Array.from(results.childNodes); // restored if the request fails
+    setLoading(true);
+    showLoadingCard();
+    setStatus("");
 
     try {
       const res = await fetch("/analyze", { method: "POST", body });
@@ -117,9 +146,10 @@
       setStatus("Analysis ready.");
       results.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
+      results.replaceChildren(...previousResults);
       setStatus(err.message, true);
     } finally {
-      submitBtn.disabled = false;
+      setLoading(false);
     }
   });
 

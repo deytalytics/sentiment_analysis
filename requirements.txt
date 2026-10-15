@@ -1,4 +1,4 @@
 flask>=3.0
-anthropic>=0.40
 pillow>=10.0
-gunicorn>=22.0
+google-genai>=1.0
+gunicorn>=22.0    # not needed on PythonAnywhere

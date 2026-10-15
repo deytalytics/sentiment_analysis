@@ -204,6 +204,33 @@ details.transcript .hint { margin: .6rem 0 1rem; color: var(--muted); font-size:
 
 .disclaimer { font-size: .88rem; color: var(--muted); }
 
+/* ---------- Spinner ---------- */
+.spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: .55em;
+  vertical-align: -.15em;
+  border: .16em solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+.spinner.large { width: 2.2rem; height: 2.2rem; margin: 0; flex: none; border-width: .28rem; color: var(--you); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-card {
+  display: flex;
+  gap: 1.1rem;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1.5rem;
+}
+.loading-card p { color: var(--muted); margin-top: .2rem; }
+
 @media (prefers-reduced-motion: reduce) {
   .venn circle, .drop { transition: none; }
+  .spinner { animation-duration: 2.4s; }
 }

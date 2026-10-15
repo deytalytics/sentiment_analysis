@@ -23,7 +23,7 @@ Production: `gunicorn -w 2 -t 180 app:app` (analysis can take 20-60s, so raise t
 
 ## How it works
 
-- `app.py` validates uploads, downsizes images with Pillow, and slices tall screenshots into overlapping segments so text stays legible. It then sends everything to Claude in one request and forces a structured result through a tool schema (`submit_analysis`), so the frontend always gets predictable JSON.
+- `flask_app.py` validates uploads, downsizes images with Pillow, and slices tall screenshots into overlapping segments so text stays legible. It then sends everything to Claude in one request and forces a structured result through a tool schema (`submit_analysis`), so the frontend always gets predictable JSON.
 - The system prompt tells the model to treat anything inside the chat as data, not instructions (screenshots can contain text like "ignore previous instructions").
 - Nothing is written to disk or a database. Uploads live in memory for the length of the request.
 

@@ -1,18 +1,27 @@
-"""Message Check: analyse dating conversations from screenshots, PDFs or text."""
+"""Message Check: analyse dating conversations from screenshots, PDFs or text.
 
-import base64
+Uses Google's Gemini API.
+  GEMINI_API_KEY  (or GOOGLE_API_KEY)  required; free key from aistudio.google.com
+  GEMINI_MODEL                         optional; defaults to "gemini-flash-latest"
+"""
+
 import io
+import json
 import logging
 import os
 
-import anthropic
 from flask import Flask, jsonify, render_template, request
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
+# "-latest" aliases track Google's current Flash model. Pin an exact model
+# name from AI Studio if you want reproducible results.
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 
 MAX_UPLOADS = 10            # files per request
 MAX_IMAGE_BLOCKS = 24       # images sent to the model after slicing
@@ -38,6 +47,10 @@ class UserError(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
+
+
+def api_key():
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
 # --------------------------------------------------------------------------
@@ -97,86 +110,82 @@ messages), "high" only with a substantial, clearly readable conversation.
 - Be kind but direct. Suggestions should be specific, practical next steps \
 the uploader could take.
 
-Always respond by calling the submit_analysis tool."""
+Respond only with JSON that matches the provided schema."""
 
-ANALYSIS_TOOL = {
-    "name": "submit_analysis",
-    "description": "Submit the transcript and analysis of the conversation.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "analysable": {"type": "boolean"},
-            "extraction_notes": {
-                "type": "string",
-                "description": "Legibility problems, guesses about who is who, or why the input could not be analysed. Empty string if none.",
-            },
-            "transcript": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "speaker": {"type": "string", "enum": ["you", "them", "unknown"]},
-                        "text": {"type": "string"},
-                    },
-                    "required": ["speaker", "text"],
-                },
-            },
-            "summary": {
-                "type": "string",
-                "description": "2-3 sentence plain-language overview of the dynamic.",
-            },
-            "compatibility": {
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "analysable": {"type": "boolean"},
+        "extraction_notes": {
+            "type": "string",
+            "description": "Legibility problems, guesses about who is who, or why the input could not be analysed. Empty string if none.",
+        },
+        "transcript": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
-                    "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                    "label": {"type": "string", "description": "Short label, e.g. 'Promising, with some mismatches'."},
-                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-                    "rationale": {"type": "string"},
-                    "breakdown": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "dimension": {"type": "string"},
-                                "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                                "note": {"type": "string"},
-                            },
-                            "required": ["dimension", "score", "note"],
-                        },
-                    },
+                    "speaker": {"type": "string", "enum": ["you", "them", "unknown"]},
+                    "text": {"type": "string"},
                 },
-                "required": ["score", "label", "confidence", "rationale", "breakdown"],
+                "required": ["speaker", "text"],
             },
-            "warnings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "severity": {"type": "string", "enum": ["low", "medium", "high"]},
-                        "category": {"type": "string"},
-                        "who": {"type": "string", "enum": ["you", "them", "both"]},
-                        "quote": {"type": "string", "description": "Exact excerpt from the transcript."},
-                        "explanation": {"type": "string"},
-                    },
-                    "required": ["severity", "category", "who", "quote", "explanation"],
-                },
-            },
-            "positives": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "quote": {"type": "string"},
-                        "explanation": {"type": "string"},
-                    },
-                    "required": ["explanation"],
-                },
-            },
-            "suggestions": {"type": "array", "items": {"type": "string"}},
-            "safety_concern": {"type": "boolean"},
         },
-        "required": ["analysable", "extraction_notes", "transcript", "summary", "warnings", "positives", "suggestions", "safety_concern"],
+        "summary": {
+            "type": "string",
+            "description": "2-3 sentence plain-language overview of the dynamic.",
+        },
+        "compatibility": {
+            "type": "object",
+            "properties": {
+                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "label": {"type": "string", "description": "Short label, e.g. 'Promising, with some mismatches'."},
+                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                "rationale": {"type": "string"},
+                "breakdown": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "dimension": {"type": "string"},
+                            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                            "note": {"type": "string"},
+                        },
+                        "required": ["dimension", "score", "note"],
+                    },
+                },
+            },
+            "required": ["score", "label", "confidence", "rationale", "breakdown"],
+        },
+        "warnings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "category": {"type": "string"},
+                    "who": {"type": "string", "enum": ["you", "them", "both"]},
+                    "quote": {"type": "string", "description": "Exact excerpt from the transcript."},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["severity", "category", "who", "quote", "explanation"],
+            },
+        },
+        "positives": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "quote": {"type": "string"},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["explanation"],
+            },
+        },
+        "suggestions": {"type": "array", "items": {"type": "string"}},
+        "safety_concern": {"type": "boolean"},
     },
+    "required": ["analysable", "extraction_notes", "transcript", "summary", "warnings", "positives", "suggestions", "safety_concern"],
 }
 
 
@@ -187,23 +196,16 @@ def _encode_image(img):
     """Encode as PNG (best for text), falling back to JPEG if too big."""
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
-    media_type = "image/png"
-    if buf.tell() > 4_500_000:  # API limit is 5 MB per image
+    mime = "image/png"
+    if buf.tell() > 4_500_000:
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=88)
-        media_type = "image/jpeg"
-    return {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": media_type,
-            "data": base64.b64encode(buf.getvalue()).decode("ascii"),
-        },
-    }
+        mime = "image/jpeg"
+    return types.Part.from_bytes(data=buf.getvalue(), mime_type=mime)
 
 
-def image_to_blocks(raw):
-    """Validate an image and return (blocks, was_truncated).
+def image_to_parts(raw):
+    """Validate an image and return (parts, was_truncated).
 
     Tall chat screenshots are cut into overlapping slices so the model can
     still read small text instead of receiving one heavily shrunk image.
@@ -245,9 +247,9 @@ def image_to_blocks(raw):
     return chunks, truncated
 
 
-def build_content(files, pasted_text, perspective, stage):
-    """Turn the request into a list of Claude content blocks."""
-    content, notes = [], []
+def build_contents(files, pasted_text, perspective, stage):
+    """Turn the request into a list of Gemini content parts."""
+    contents, notes = [], []
     image_count = 0
 
     for n, f in enumerate(files, start=1):
@@ -261,21 +263,14 @@ def build_content(files, pasted_text, perspective, stage):
                 raise UserError("One of the PDFs appears to be corrupted.")
             if len(raw) > MAX_PDF_BYTES:
                 raise UserError("PDFs must be under 10 MB.")
-            content.append({"type": "text", "text": f"[Upload {n}: PDF document]"})
-            content.append({
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": base64.b64encode(raw).decode("ascii"),
-                },
-            })
+            contents.append(f"[Upload {n}: PDF document]")
+            contents.append(types.Part.from_bytes(data=raw, mime_type="application/pdf"))
         elif ext == "txt":
             text = raw.decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
-            content.append({"type": "text", "text": f"[Upload {n}: text export]\n{text}"})
+            contents.append(f"[Upload {n}: text export]\n{text}")
         elif ext in IMAGE_EXT or ext == "":
-            blocks, truncated = image_to_blocks(raw)
-            image_count += len(blocks)
+            parts, truncated = image_to_parts(raw)
+            image_count += len(parts)
             if image_count > MAX_IMAGE_BLOCKS:
                 raise UserError("Too much image content. Try fewer or shorter screenshots.")
             if truncated:
@@ -284,16 +279,16 @@ def build_content(files, pasted_text, perspective, stage):
                     "Split it into separate screenshots to include the rest."
                 )
             label = f"[Upload {n}: screenshot"
-            label += f", {len(blocks)} consecutive slices, overlapping slightly]" if len(blocks) > 1 else "]"
-            content.append({"type": "text", "text": label})
-            content.extend(blocks)
+            label += f", {len(parts)} consecutive slices, overlapping slightly]" if len(parts) > 1 else "]"
+            contents.append(label)
+            contents.extend(parts)
         else:
             raise UserError(f"Unsupported file type: .{ext}. Use PNG, JPG, WEBP, GIF, PDF or TXT.")
 
     if pasted_text:
-        content.append({"type": "text", "text": f"[Pasted conversation]\n{pasted_text[:MAX_TEXT_CHARS]}"})
+        contents.append(f"[Pasted conversation]\n{pasted_text[:MAX_TEXT_CHARS]}")
 
-    if not content:
+    if not contents:
         raise UserError("Add at least one screenshot, file, or some pasted text.")
 
     context = []
@@ -301,9 +296,9 @@ def build_content(files, pasted_text, perspective, stage):
         context.append(f"The uploader says their own messages are: {perspective[:200]}")
     if stage:
         context.append(f"Stage of the connection (per the uploader): {stage[:60]}")
-    context.append("Transcribe and analyse the conversation above, then call submit_analysis.")
-    content.append({"type": "text", "text": "\n".join(context)})
-    return content, notes
+    context.append("Transcribe and analyse the conversation above, then submit your analysis.")
+    contents.append("\n".join(context))
+    return contents, notes
 
 
 # --------------------------------------------------------------------------
@@ -316,8 +311,8 @@ def index():
 
 @app.post("/analyze")
 def analyze():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return jsonify(error="The server has no ANTHROPIC_API_KEY configured."), 500
+    if not api_key():
+        return jsonify(error="The server has no GEMINI_API_KEY configured."), 500
 
     files = [f for f in request.files.getlist("files") if f and f.filename]
     if len(files) > MAX_UPLOADS:
@@ -328,46 +323,62 @@ def analyze():
     stage = (request.form.get("stage") or "").strip()
 
     try:
-        content, notes = build_content(files, pasted, perspective, stage)
+        contents, notes = build_contents(files, pasted, perspective, stage)
 
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=8000,
-            system=SYSTEM_PROMPT,
-            tools=[ANALYSIS_TOOL],
-            tool_choice={"type": "tool", "name": "submit_analysis"},
-            messages=[{"role": "user", "content": content}],
+        # Analysing abusive or sexual messages is the point of this app, so
+        # relax the default content filters (Google still blocks the most
+        # severe content).
+        safety = [
+            types.SafetySetting(category=c, threshold="BLOCK_ONLY_HIGH")
+            for c in (
+                "HARM_CATEGORY_HARASSMENT",
+                "HARM_CATEGORY_HATE_SPEECH",
+                "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "HARM_CATEGORY_DANGEROUS_CONTENT",
+            )
+        ]
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=ANALYSIS_SCHEMA,
+            max_output_tokens=16000,  # headroom: "thinking" models spend tokens before answering
+            safety_settings=safety,
         )
 
-        if response.stop_reason == "max_tokens":
-            raise UserError("That conversation is too long to analyse in one go. Try fewer screenshots.")
+        client = genai.Client(api_key=api_key())
+        response = client.models.generate_content(model=MODEL, contents=contents, config=config)
 
-        result = next((b.input for b in response.content if b.type == "tool_use"), None)
-        if not result:
-            raise UserError("The analysis didn't come back in the expected format. Please try again.", 502)
+        text = getattr(response, "text", None)
+        if not text:
+            log.warning("Gemini returned no text: %s", getattr(response, "prompt_feedback", None))
+            raise UserError(
+                "Gemini declined to analyse this conversation (its safety filters may have blocked it). "
+                "Try again, or try different screenshots.", 502)
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            raise UserError("Gemini's answer was cut off or malformed. Try again, or use fewer screenshots.", 502)
 
         result["server_notes"] = notes
         return jsonify(result)
 
     except UserError as e:
         return jsonify(error=str(e)), e.status
-    except anthropic.RateLimitError:
-        return jsonify(error="Too many requests right now. Wait a moment and try again."), 429
-    except anthropic.AuthenticationError:
-        log.error("Anthropic authentication failed; check ANTHROPIC_API_KEY")
-        return jsonify(error="The server's API key was rejected."), 500
-    except anthropic.BadRequestError as e:
-        log.warning("Bad request to Anthropic: %s", e)
-        return jsonify(error="The files couldn't be processed. Try clearer or smaller screenshots."), 400
-    except anthropic.APIConnectionError:
-        return jsonify(error="Couldn't reach the analysis service. Try again shortly."), 502
-    except anthropic.APIStatusError as e:
-        log.error("Anthropic API error: %s", e)
-        return jsonify(error="The analysis service had a problem. Try again shortly."), 502
+    except genai_errors.APIError as e:
+        code = getattr(e, "code", None)
+        log.warning("Gemini API error %s: %s", code, e)
+        if code == 429:
+            return jsonify(error="Gemini's free-tier limit was reached. Wait a minute (or until tomorrow) and try again."), 429
+        if code in (401, 403):
+            return jsonify(error="The server's Gemini API key was rejected, or this model isn't available to it."), 500
+        if code == 404:
+            return jsonify(error="That Gemini model name isn't available. Check GEMINI_MODEL in AI Studio."), 500
+        if code == 400:
+            return jsonify(error="The files couldn't be processed. Try clearer or smaller screenshots."), 400
+        return jsonify(error="Gemini had a problem. Try again shortly."), 502
     except Exception:  # noqa: BLE001
         log.exception("Unexpected error")
-        return jsonify(error="Something went wrong on the server."), 500
+        return jsonify(error="Something went wrong on the server, or Gemini couldn't be reached."), 500
 
 
 @app.errorhandler(413)
