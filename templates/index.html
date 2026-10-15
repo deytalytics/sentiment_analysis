@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Message Check</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="masthead">
+    <h1>Message Check</h1>
+    <p>Upload a dating chat and get an honest read on how the two of you communicate.</p>
+  </header>
+
+  <main class="layout">
+    <section class="intake" aria-labelledby="intake-title">
+      <h2 id="intake-title">Your conversation</h2>
+      <form id="form" novalidate>
+        <div id="drop" class="drop" tabindex="0" role="button" aria-describedby="drop-hint">
+          <strong>Drop screenshots here</strong>
+          <span id="drop-hint">or paste from your clipboard, or click to browse. PNG, JPG, WEBP, GIF, PDF or TXT, up to 10 files.</span>
+          <input id="file-input" type="file" multiple hidden
+                 accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,.txt">
+        </div>
+        <ul id="file-list" class="file-list" aria-label="Selected files"></ul>
+
+        <label for="text">Or paste the conversation</label>
+        <textarea id="text" rows="5" placeholder="Them: hey, how was your week?&#10;Me: pretty good, you?"></textarea>
+
+        <label for="perspective">Which messages are yours?</label>
+        <input id="perspective" type="text" maxlength="200" placeholder="e.g. the blue bubbles on the right">
+
+        <label for="stage">Where are you in this?</label>
+        <select id="stage">
+          <option value="">Not sure / skip</option>
+          <option>Just matched</option>
+          <option>Chatting for a few days</option>
+          <option>Chatting for weeks</option>
+          <option>Dating in person</option>
+          <option>After a disagreement</option>
+        </select>
+
+        <p class="privacy">Files are sent to Claude for analysis and aren't stored by this app. Only upload chats you're comfortable sharing.</p>
+
+        <button id="submit" type="submit">Analyse conversation</button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section id="results" class="results" aria-live="polite" aria-label="Analysis">
+      <div class="empty">
+        <h2>What you'll get</h2>
+        <p>Each file is read for the messages inside it, so you can check what was picked up. Then you'll see:</p>
+        <ul>
+          <li>Warnings about the communication, from either side, each tied to an exact quote.</li>
+          <li>A compatibility rating with a breakdown and a confidence level.</li>
+          <li>Specific things you could say or do next.</li>
+        </ul>
+        <p class="fine">The rating reflects only the messages you share. It isn't a prediction about the relationship.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
