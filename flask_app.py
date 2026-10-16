@@ -2,13 +2,15 @@
 
 Uses Google's Gemini API.
   GEMINI_API_KEY  (or GOOGLE_API_KEY)  required; free key from aistudio.google.com
-  GEMINI_MODEL                         optional; defaults to "gemini-flash-latest"
+  GEMINI_MODELS                        optional; comma-separated fallback chain, tried in order
+  GEMINI_MODEL                         optional; legacy single model, tried first if set
 """
 
 import io
 import json
 import logging
 import os
+import time
 
 from flask import Flask, jsonify, render_template, request
 from google import genai
@@ -21,7 +23,16 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 # --------------------------------------------------------------------------
 # "-latest" aliases track Google's current Flash model. Pin an exact model
 # name from AI Studio if you want reproducible results.
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+# Models are tried in order; if one hits a quota/availability error the next
+# is used. Override the whole chain with GEMINI_MODELS="a,b,c".
+DEFAULT_MODELS = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash-lite",
+]
+FALLBACK_STATUS = {429, 503, 404}   # quota hit, overloaded, model unavailable
+COOLDOWN_SECONDS = 300              # skip a model for this long after it fails
 
 MAX_UPLOADS = 10            # files per request
 MAX_IMAGE_BLOCKS = 24       # images sent to the model after slicing
@@ -51,6 +62,48 @@ class UserError(Exception):
 
 def api_key():
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+
+def model_chain():
+    raw = os.environ.get("GEMINI_MODELS")
+    models = [m.strip() for m in raw.split(",") if m.strip()] if raw else list(DEFAULT_MODELS)
+    legacy = os.environ.get("GEMINI_MODEL")
+    if legacy and legacy not in models:
+        models.insert(0, legacy)
+    return models
+
+
+_cooldown = {}  # model -> time.monotonic() when it may be tried again
+
+
+def generate_with_fallback(client, contents, config):
+    """Try each model in turn until one succeeds.
+
+    Falls through on quota (429), overload (503) and unknown-model (404)
+    errors. Models that just failed are skipped for COOLDOWN_SECONDS so
+    later requests don't waste time retrying them. Other errors are raised.
+    """
+    chain = model_chain()
+    now = time.monotonic()
+    fresh = [m for m in chain if _cooldown.get(m, 0) <= now]
+    # If everything is cooling down, try the full chain anyway.
+    candidates = fresh or chain
+
+    last_error = None
+    for model in candidates:
+        try:
+            response = client.models.generate_content(model=model, contents=contents, config=config)
+            _cooldown.pop(model, None)
+            log.info("Used model %s", model)
+            return response
+        except genai_errors.APIError as e:
+            code = getattr(e, "code", None)
+            if code not in FALLBACK_STATUS:
+                raise
+            log.warning("Model %s failed (%s), trying next", model, code)
+            _cooldown[model] = time.monotonic() + COOLDOWN_SECONDS
+            last_error = e
+    raise last_error
 
 
 # --------------------------------------------------------------------------
@@ -346,7 +399,7 @@ def analyze():
         )
 
         client = genai.Client(api_key=api_key())
-        response = client.models.generate_content(model=MODEL, contents=contents, config=config)
+        response = generate_with_fallback(client, contents, config)
 
         text = getattr(response, "text", None)
         if not text:
@@ -368,16 +421,14 @@ def analyze():
         code = getattr(e, "code", None)
         log.warning("Gemini API error %s: %s", code, e)
         if code == 429:
-            return jsonify(error="Gemini's free-tier limit was reached. Wait a minute (or until tomorrow) and try again."), code
+            return jsonify(error="Every configured Gemini model has hit its free-tier limit. Wait a minute (or until tomorrow) and try again."), 429
         if code in (401, 403):
-            return jsonify(error="The server's Gemini API key was rejected, or this model isn't available to it."), code
+            return jsonify(error="The server's Gemini API key was rejected, or this model isn't available to it."), 500
         if code == 404:
-            return jsonify(error="That Gemini model name isn't available. Check GEMINI_MODEL in AI Studio."), code
+            return jsonify(error="None of the configured Gemini models are available. Check GEMINI_MODELS in AI Studio."), 500
         if code == 400:
-            return jsonify(error="The files couldn't be processed. Try clearer or smaller screenshots."), code
-        if code == 503:
-            return jsonify(error="Gemini is currently too busy to handle your request. Please try again."), code
-        return jsonify(error=f"Gemini had a problem. Try again shortly. {e}"), 502
+            return jsonify(error="The files couldn't be processed. Try clearer or smaller screenshots."), 400
+        return jsonify(error="Gemini had a problem. Try again shortly."), 502
     except Exception:  # noqa: BLE001
         log.exception("Unexpected error")
         return jsonify(error="Something went wrong on the server, or Gemini couldn't be reached."), 500
