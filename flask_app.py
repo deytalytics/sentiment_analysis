@@ -368,14 +368,16 @@ def analyze():
         code = getattr(e, "code", None)
         log.warning("Gemini API error %s: %s", code, e)
         if code == 429:
-            return jsonify(error="Gemini's free-tier limit was reached. Wait a minute (or until tomorrow) and try again."), 429
+            return jsonify(error="Gemini's free-tier limit was reached. Wait a minute (or until tomorrow) and try again."), code
         if code in (401, 403):
-            return jsonify(error="The server's Gemini API key was rejected, or this model isn't available to it."), 500
+            return jsonify(error="The server's Gemini API key was rejected, or this model isn't available to it."), code
         if code == 404:
-            return jsonify(error="That Gemini model name isn't available. Check GEMINI_MODEL in AI Studio."), 500
+            return jsonify(error="That Gemini model name isn't available. Check GEMINI_MODEL in AI Studio."), code
         if code == 400:
-            return jsonify(error="The files couldn't be processed. Try clearer or smaller screenshots."), 400
-        return jsonify(error="Gemini had a problem. Try again shortly."), 502
+            return jsonify(error="The files couldn't be processed. Try clearer or smaller screenshots."), code
+        if code == 503:
+            return jsonify(error="Gemini is currently too busy to handle your request. Please try again."), code
+        return jsonify(error=f"Gemini had a problem. Try again shortly. {e}"), 502
     except Exception:  # noqa: BLE001
         log.exception("Unexpected error")
         return jsonify(error="Something went wrong on the server, or Gemini couldn't be reached."), 500
